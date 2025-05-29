@@ -34,7 +34,8 @@ def diffuse(
         guidance_scale,
         eta,
     ):
-    torch_device = cond_latents.get_device()
+    # torch_device = cond_latents.get_device()
+    torch_device = cond_latents.device.type
 
     # classifier guidance: add the unconditional embedding
     max_length = cond_embeddings.shape[1] # 77
@@ -79,13 +80,16 @@ def diffuse(
 
         # compute the previous noisy sample x_t -> x_t-1
         if isinstance(pipe.scheduler, LMSDiscreteScheduler):
-            cond_latents = pipe.scheduler.step(noise_pred, i, cond_latents, **extra_step_kwargs)["prev_sample"]
+            # cond_latents = pipe.scheduler.step(noise_pred, i, cond_latents, **extra_step_kwargs)["prev_sample"]
+            cond_latents = pipe.scheduler.step(noise_pred, t, cond_latents, **extra_step_kwargs)["prev_sample"]
         else:
+            # cond_latents = pipe.scheduler.step(noise_pred, t, cond_latents, **extra_step_kwargs)["prev_sample"]
             cond_latents = pipe.scheduler.step(noise_pred, t, cond_latents, **extra_step_kwargs)["prev_sample"]
 
     # scale and decode the image latents with vae
     cond_latents = 1 / 0.18215 * cond_latents
-    image = pipe.vae.decode(cond_latents)
+    # image = pipe.vae.decode(cond_latents)
+    image = pipe.vae.decode(cond_latents).sample
 
     # generate output numpy image as uint8
     image = (image / 2 + 0.5).clamp(0, 1)
@@ -126,7 +130,7 @@ def run(
         prompt = "blueberry spaghetti", # prompt to dream about
         gpu = 0, # id of the gpu to run on
         name = 'blueberry', # name of this project, for the output directory
-        rootdir = '/home/ubuntu/dreams',
+        rootdir = './dreams',
         num_steps = 200, # number of steps between each pair of sampled points
         max_frames = 10000, # number of frames to write and then exit the script
         num_inference_steps = 50, # more (e.g. 100, 200 etc) can create slightly better images
@@ -138,13 +142,17 @@ def run(
         eta = 0.0,
         width = 512,
         height = 512,
-        weights_path = "/home/ubuntu/stable-diffusion-v1-3-diffusers",
+        weights_path = "CompVis/stable-diffusion-v1-4",
         # --------------------------------------
     ):
-    assert torch.cuda.is_available()
+    # If GPU available uncomment below line
+    # assert torch.cuda.is_available()
+
     assert height % 8 == 0 and width % 8 == 0
     torch.manual_seed(seed)
-    torch_device = f"cuda:{gpu}"
+    torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+    # torch_device = f"cuda:{gpu}"
+    print(f"Torch device: {torch_device}")
 
     # init the output dir
     outdir = os.path.join(rootdir, name)
@@ -152,7 +160,8 @@ def run(
 
     # init all of the models and move them to a given GPU
     lms = LMSDiscreteScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear")
-    pipe = StableDiffusionPipeline.from_pretrained(weights_path, scheduler=lms, use_auth_token=True)
+    # pipe = StableDiffusionPipeline.from_pretrained(model_path, torch_dtype=torch.float16).to(device)
+    pipe = StableDiffusionPipeline.from_pretrained(weights_path, scheduler=lms).to(torch_device)
 
     pipe.unet.to(torch_device)
     pipe.vae.to(torch_device)
@@ -163,20 +172,34 @@ def run(
     cond_embeddings = pipe.text_encoder(text_input.input_ids.to(torch_device))[0] # shape [1, 77, 768]
 
     # sample a source
-    init1 = torch.randn((1, pipe.unet.in_channels, height // 8, width // 8), device=torch_device)
+    init1 = torch.randn((1, pipe.unet.config.in_channels, height // 8, width // 8), device=torch_device)
 
     # iterate the loop
     frame_index = 0
     while frame_index < max_frames:
 
         # sample the destination
-        init2 = torch.randn((1, pipe.unet.in_channels, height // 8, width // 8), device=torch_device)
+        init2 = torch.randn((1, pipe.unet.config.in_channels, height // 8, width // 8), device=torch_device)
+
+        # for i, t in enumerate(np.linspace(0, 1, num_steps)):
+        #     init = slerp(float(t), init1, init2)
+
+        #     print("dreaming... ", frame_index)
+        #     with autocast("cuda"):
+        #         image = diffuse(pipe, cond_embeddings, init, num_inference_steps, guidance_scale, eta)
+        #     im = Image.fromarray(image)
+        #     outpath = os.path.join(outdir, 'frame%06d.jpg' % frame_index)
+        #     im.save(outpath, quality=quality)
+        #     frame_index += 1
 
         for i, t in enumerate(np.linspace(0, 1, num_steps)):
             init = slerp(float(t), init1, init2)
 
             print("dreaming... ", frame_index)
-            with autocast("cuda"):
+            if torch_device == "cuda":
+                with autocast("cuda"):
+                    image = diffuse(pipe, cond_embeddings, init, num_inference_steps, guidance_scale, eta)
+            else:
                 image = diffuse(pipe, cond_embeddings, init, num_inference_steps, guidance_scale, eta)
             im = Image.fromarray(image)
             outpath = os.path.join(outdir, 'frame%06d.jpg' % frame_index)
