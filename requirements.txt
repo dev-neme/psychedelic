@@ -1,0 +1,4 @@
+pip install fire
+pip install diffusers[torch]
+pip install torchvision
+pip install einops
